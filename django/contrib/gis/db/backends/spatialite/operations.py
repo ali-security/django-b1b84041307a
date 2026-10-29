@@ -203,7 +203,8 @@ class SpatiaLiteOperations(BaseSpatialOperations, DatabaseOperations):
             read = wkb_r().read
 
             def converter(value, expression, connection):
-                return None if value is None else GEOSGeometryBase(read(value), geom_class)
+                if value is not None:
+                    return GEOSGeometryBase(read(value, max_geom_collections=None), geom_class)
         else:
             read = wkt_r().read
             srid = expression.output_field.srid
@@ -212,7 +213,7 @@ class SpatiaLiteOperations(BaseSpatialOperations, DatabaseOperations):
 
             def converter(value, expression, connection):
                 if value is not None:
-                    geom = GEOSGeometryBase(read(value), geom_class)
+                    geom = GEOSGeometryBase(read(value, max_geom_collections=None), geom_class)
                     if srid:
                         geom.srid = srid
                     return geom

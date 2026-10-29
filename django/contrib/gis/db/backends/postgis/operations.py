@@ -389,7 +389,8 @@ class PostGISOperations(BaseSpatialOperations, DatabaseOperations):
         geom_class = expression.output_field.geom_class
 
         def converter(value, expression, connection):
-            return None if value is None else GEOSGeometryBase(read(value), geom_class)
+            if value is not None:
+                return GEOSGeometryBase(read(value, max_geom_collections=None), geom_class)
         return converter
 
     def get_area_att_for_field(self, field):

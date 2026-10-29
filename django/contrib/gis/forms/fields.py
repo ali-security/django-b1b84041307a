@@ -1,6 +1,7 @@
 from django import forms
 from django.contrib.gis.gdal import GDALException
 from django.contrib.gis.geos import GEOSException, GEOSGeometry
+from django.contrib.gis.geos.prototypes.io import MAX_GEOM_COLLECTIONS
 from django.utils.translation import gettext_lazy as _
 
 from .widgets import OpenLayersWidget
@@ -14,6 +15,7 @@ class GeometryField(forms.Field):
     """
     widget = OpenLayersWidget
     geom_type = 'GEOMETRY'
+    max_geom_collections = MAX_GEOM_COLLECTIONS
 
     default_error_messages = {
         'required': _('No geometry value provided.'),
@@ -23,12 +25,18 @@ class GeometryField(forms.Field):
                              'to the SRID of the geometry form field.'),
     }
 
-    def __init__(self, *, srid=None, geom_type=None, **kwargs):
+    def __init__(self, *, srid=None, geom_type=None, max_geom_collections=None, **kwargs):
         self.srid = srid
         if geom_type is not None:
             self.geom_type = geom_type
+        if max_geom_collections is not None:
+            self.max_geom_collections = max_geom_collections
         super().__init__(**kwargs)
         self.widget.attrs['geom_type'] = self.geom_type
+        # Propagate the limit to the (per-field) widget instance, which does
+        # the actual parsing. Custom widgets that override deserialize() and
+        # ignore this attribute still get the default limit via GEOSGeometry.
+        self.widget.max_geom_collections = self.max_geom_collections
 
     def to_python(self, value):
         """Transform the value to a Geometry object."""
@@ -43,7 +51,7 @@ class GeometryField(forms.Field):
                     value = None
             else:
                 try:
-                    value = GEOSGeometry(value)
+                    value = GEOSGeometry(value, max_geom_collections=self.max_geom_collections)
                 except (GEOSException, ValueError, TypeError):
                     value = None
             if value is None:
