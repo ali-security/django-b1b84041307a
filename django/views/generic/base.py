@@ -97,11 +97,16 @@ class View:
         return handler(request, *args, **kwargs)
 
     def http_method_not_allowed(self, request, *args, **kwargs):
-        logger.warning(
+        # Avoid a circular import: django.utils.log imports django.views.debug,
+        # which loads this module through django.views.
+        from django.utils.log import log_response
+        response = HttpResponseNotAllowed(self._allowed_methods())
+        log_response(
             'Method Not Allowed (%s): %s', request.method, request.path,
-            extra={'status_code': 405, 'request': request}
+            response=response,
+            request=request,
         )
-        return HttpResponseNotAllowed(self._allowed_methods())
+        return response
 
     def options(self, request, *args, **kwargs):
         """Handle responding to requests for the OPTIONS HTTP verb."""
@@ -192,11 +197,11 @@ class RedirectView(View):
             else:
                 return HttpResponseRedirect(url)
         else:
-            logger.warning(
-                'Gone: %s', request.path,
-                extra={'status_code': 410, 'request': request}
-            )
-            return HttpResponseGone()
+            # Avoid a circular import (see View.http_method_not_allowed()).
+            from django.utils.log import log_response
+            response = HttpResponseGone()
+            log_response('Gone: %s', request.path, response=response, request=request)
+            return response
 
     def head(self, request, *args, **kwargs):
         return self.get(request, *args, **kwargs)

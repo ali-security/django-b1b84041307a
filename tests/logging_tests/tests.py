@@ -9,12 +9,13 @@ from django.core import mail
 from django.core.exceptions import PermissionDenied
 from django.core.files.temp import NamedTemporaryFile
 from django.core.management import color
+from django.http import HttpResponse
 from django.http.multipartparser import MultiPartParserError
 from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.test.utils import LoggingCaptureMixin
 from django.utils.log import (
     DEFAULT_LOGGING, AdminEmailHandler, CallbackFilter, RequireDebugFalse,
-    RequireDebugTrue, ServerFormatter,
+    RequireDebugTrue, ServerFormatter, log_response,
 )
 
 from . import views
@@ -111,6 +112,24 @@ class DefaultLoggingTests(SetupDefaultLoggingMixin, LoggingCaptureMixin, SimpleT
 
 class LoggingAssertionMixin:
 
+    def assertLogRecord(self, logger_cm, msg, levelno, status_code, request=None, exc_class=None):
+        records_len = len(logger_cm.records)
+        self.assertEqual(
+            records_len, 1,
+            "Wrong number of calls for logger_cm=%r in levelno=%r (expected 1, "
+            "got %d)." % (logger_cm, levelno, records_len)
+        )
+        record = logger_cm.records[0]
+        self.assertEqual(record.getMessage(), msg)
+        self.assertEqual(record.levelno, levelno)
+        self.assertEqual(record.status_code, status_code)
+        if request is not None:
+            self.assertEqual(record.request, request)
+        if exc_class:
+            self.assertIsNotNone(record.exc_info)
+            self.assertEqual(record.exc_info[0], exc_class)
+        return record
+
     def assertLogsRequest(self, url, level, msg, status_code, logger='django.request', exc_class=None):
         with self.assertLogs(logger, level) as cm:
             try:
@@ -146,6 +165,14 @@ class HandlerLoggingTests(SetupDefaultLoggingMixin, LoggingAssertionMixin, Loggi
             level='WARNING',
             status_code=404,
             msg='Not Found: /does_not_exist/',
+        )
+
+    def test_control_chars_escaped(self):
+        self.assertLogsRequest(
+            url='/%1B[1;31mNOW IN RED!!!1B[0m/',
+            level='WARNING',
+            status_code=404,
+            msg=r'Not Found: /\x1b[1;31mNOW IN RED!!!1B[0m/',
         )
 
     def test_page_not_found_raised(self):
@@ -594,3 +621,66 @@ class LogFormattersTests(SimpleTestCase):
         with patch_django_server_logger() as logger_output:
             logger.info(log_msg)
             self.assertRegex(logger_output.getvalue(), r'^\[[-:,.\s\d]+\] %s' % log_msg)
+
+
+class LogResponseRealLoggerTests(LoggingAssertionMixin, SimpleTestCase):
+
+    def test_unicode_escape_escaping(self):
+        test_cases = [
+            # Control characters.
+            ('line\nbreak', 'line\\nbreak'),
+            ('carriage\rreturn', 'carriage\\rreturn'),
+            ('tab\tseparated', 'tab\\tseparated'),
+            ('formfeed\f', 'formfeed\\x0c'),
+            ('bell\a', 'bell\\x07'),
+            ('multi\nline\ntext', 'multi\\nline\\ntext'),
+            # Slashes.
+            ('slash\\test', 'slash\\\\test'),
+            ('back\\slash', 'back\\\\slash'),
+            # Quotes.
+            ('quote"test"', 'quote"test"'),
+            ("quote'test'", "quote'test'"),
+            # Accented, composed characters, emojis and symbols.
+            ('café', 'caf\\xe9'),
+            ('é', 'e\\u0301'),  # e + combining acute
+            ('smile🙂', 'smile\\U0001f642'),
+            ('weird ☃️', 'weird \\u2603\\ufe0f'),
+            # Non-Latin alphabets.
+            ('Привет', '\\u041f\\u0440\\u0438\\u0432\\u0435\\u0442'),
+            ('你好', '\\u4f60\\u597d'),
+            # ANSI escape sequences.
+            ('escape\x1b[31mred\x1b[0m', 'escape\\x1b[31mred\\x1b[0m'),
+            (
+                '/\x1b[1;31mCAUTION!!YOU ARE PWNED\x1b[0m/',
+                '/\\x1b[1;31mCAUTION!!YOU ARE PWNED\\x1b[0m/',
+            ),
+            (
+                '/\r\n\r\n1984-04-22 INFO    Listening on 0.0.0.0:8080\r\n\r\n',
+                '/\\r\\n\\r\\n1984-04-22 INFO    Listening on 0.0.0.0:8080\\r\\n\\r\\n',
+            ),
+            # Plain safe input.
+            ('normal-path', 'normal-path'),
+            ('slash/colon:', 'slash/colon:'),
+            # Non strings.
+            (0, '0'),
+            ([1, 2, 3], '[1, 2, 3]'),
+            ({'test': '🙂'}, "{'test': '🙂'}"),
+        ]
+
+        msg = 'Test message: %s'
+        for case, expected in test_cases:
+            with self.assertLogs('django.request', level='ERROR') as cm:
+                with self.subTest(case=case):
+                    response = HttpResponse(status=318)
+                    log_response(msg, case, response=response, level='error')
+
+                    record = self.assertLogRecord(
+                        cm,
+                        msg % expected,
+                        levelno=logging.ERROR,
+                        status_code=318,
+                        request=None,
+                    )
+                    self.assertIsNone(record.request)
+                    # Log record is always a single line.
+                    self.assertEqual(len(record.getMessage().splitlines()), 1)
