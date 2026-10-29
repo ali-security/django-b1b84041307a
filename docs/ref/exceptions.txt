@@ -84,6 +84,7 @@ Django core exception classes are defined in ``django.core.exceptions``.
     * ``SuspiciousMultipartForm``
     * ``SuspiciousSession``
     * ``TooManyFieldsSent``
+    * ``TooManyFilesSent``
 
     If a ``SuspiciousOperation`` exception reaches the WSGI handler level it is
     logged at the ``Error`` level and results in
