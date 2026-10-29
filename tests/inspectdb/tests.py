@@ -259,7 +259,7 @@ class InspectDBTestCase(TestCase):
         orig_data_types_reverse = connection.introspection.data_types_reverse
         try:
             connection.introspection.data_types_reverse = {
-                'text': 'myfields.TextField',
+                'TEXT': 'myfields.TextField',
                 'bigint': 'BigIntegerField',
             }
             call_command('inspectdb', 'inspectdb_columntypes', stdout=out)

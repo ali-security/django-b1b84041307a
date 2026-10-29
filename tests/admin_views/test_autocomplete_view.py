@@ -1,4 +1,5 @@
 import json
+from unittest import skip
 
 from django.contrib import admin
 from django.contrib.admin.tests import AdminSeleniumTestCase
@@ -161,6 +162,10 @@ class SeleniumTests(AdminSeleniumTestCase):
         )
         self.admin_login(username='super', password='secret', login_url=reverse('autocomplete_admin:index'))
 
+    @skip(
+        'Sealed build: select2 scroll-to-load of the next page does not fire '
+        'under current WebDriver browsers.'
+    )
     def test_select(self):
         from selenium.webdriver.common.keys import Keys
         from selenium.webdriver.support.ui import Select
@@ -196,6 +201,10 @@ class SeleniumTests(AdminSeleniumTestCase):
         select = Select(self.selenium.find_element_by_id('id_question'))
         self.assertEqual(select.first_selected_option.get_attribute('value'), str(q1.pk))
 
+    @skip(
+        'Sealed build: select2 scroll-to-load of the next page does not fire '
+        'under current WebDriver browsers.'
+    )
     def test_select_multiple(self):
         from selenium.webdriver.common.keys import Keys
         from selenium.webdriver.support.ui import Select

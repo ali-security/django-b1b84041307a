@@ -1,0 +1,394 @@
+name: Tests
+
+# Django 2.2.x has no GitHub Actions CI upstream (it ran on Jenkins). This
+# workflow mirrors tox.ini (`tox -e py3X` -> `runtests.py`, `tox -e javascript`)
+# on the Python versions setup.py declares (3.5-3.9), adds GeoDjango legs on the
+# GEOS/GDAL/SpatiaLite/PostGIS versions Django 2.2 supports, and builds the
+# sdist + wheel the release ships.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "runtests.py test labels to run (empty = full suite)"
+        required: false
+        default: ""
+
+defaults:
+  run:
+    # explicit bash => `-eo pipefail`, so no pipeline can hide a failing command
+    shell: bash
+
+env:
+  TIME_MACHINE_INDEX: "https://:2022-04-11T13:28:14.391Z@time-machines-pypi.sealsecurity.io/"
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python-version: "3.5", toxenv: py35 }
+          - { python-version: "3.6", toxenv: py36 }
+          - { python-version: "3.7", toxenv: py37 }
+          - { python-version: "3.8", toxenv: py38 }
+          - { python-version: "3.9.4", toxenv: py39, selenium: true }
+    services:
+      memcached:
+        image: memcached:1.6
+        ports:
+          - 11211:11211
+      pylibmc:
+        image: memcached:1.6
+        ports:
+          - 11212:11211
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: MatteoH2O1999/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-build: true
+          allow-build: allow
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "13"
+
+      - name: Install system libraries (libmemcached for pylibmc, watchman, gettext)
+        run: sudo apt-get update && sudo apt-get install -y libmemcached-dev zlib1g-dev watchman gettext
+
+      - name: Configure pip index (time-machine)
+        run: pip config set global.index-url "$TIME_MACHINE_INDEX"
+
+      # The runner's cached interpreters carry a setuptools too new for the
+      # time-machine virtualenv (canonicalize_version(strip_trailing_zero=...)
+      # TypeError on 3.8), so reinstall the release-era one first.
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade --force-reinstall pip setuptools wheel==0.34.2
+          python -m pip install --upgrade tox
+
+      - name: Write test settings (SQLite + memcached caches)
+        run: |
+          mkdir -p "$RUNNER_TEMP/seal"
+          cat > "$RUNNER_TEMP/seal/seal_settings.py" <<'EOF'
+          from test_sqlite import *  # noqa
+
+          CACHES = {
+              'default': {
+                  'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+              },
+              'memcached': {
+                  'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+                  'LOCATION': '127.0.0.1:11211',
+              },
+              'pylibmc': {
+                  'BACKEND': 'django.core.cache.backends.memcached.PyLibMCCache',
+                  'LOCATION': '127.0.0.1:11212',
+              },
+          }
+          EOF
+
+      - name: Run tox
+        env:
+          PYTHONPATH: ${{ runner.temp }}/seal
+        run: |
+          tox -e ${{ matrix.toxenv }} -- --settings=seal_settings -v 2 ${{ inputs.test-filter }} > "$RUNNER_TEMP/main-tests.log" 2>&1
+
+      # runtests.py --selenium runs only the tests tagged 'selenium' (the admin
+      # and GeoDjango widget browser tests the main run skips with
+      # 'No browsers specified.'). Uses the release-era Firefox 99 (April 2022)
+      # + geckodriver 0.31: the runner's current Chrome breaks most of these
+      # 2019-era browser tests through WebDriver behaviour changes.
+      - name: Install Firefox 99 + geckodriver 0.31
+        if: matrix.selenium
+        run: |
+          sudo apt-get install -y libdbus-glib-1-2
+          mkdir -p "$RUNNER_TEMP/browser"
+          curl -fsSL https://ftp.mozilla.org/pub/firefox/releases/99.0/linux-x86_64/en-US/firefox-99.0.tar.bz2 | tar xj -C "$RUNNER_TEMP/browser"
+          curl -fsSL https://github.com/mozilla/geckodriver/releases/download/v0.31.0/geckodriver-v0.31.0-linux64.tar.gz | tar xz -C "$RUNNER_TEMP/browser"
+          echo "$RUNNER_TEMP/browser" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/browser/firefox" >> "$GITHUB_PATH"
+
+      - name: Run Selenium tests (Firefox)
+        if: matrix.selenium
+        env:
+          PYTHONPATH: ${{ runner.temp }}/seal
+        run: |
+          firefox --version
+          geckodriver --version
+          # tox passes DISPLAY but not XAUTHORITY, so the Xvfb server runs with
+          # access control off (-ac) for the browser to reach it from the tox env.
+          xvfb-run -a -s "-screen 0 1280x1024x24 -ac" tox -e ${{ matrix.toxenv }} -- --settings=seal_settings -v 2 --parallel=1 --selenium=firefox ${{ inputs.test-filter }} > "$RUNNER_TEMP/selenium-tests.log" 2>&1
+
+      # The -v 2 runner output (one line per test) goes to a file because the
+      # full suite exceeds the CI log budget; this prints the runner's result
+      # lines, the passed count, every failure, and every skipped test with
+      # its reason.
+      - name: Test summary
+        if: always()
+        run: |
+          awk '
+            FNR == 1 { file = FILENAME; sub(/.*\//, "", file) }
+            /^Ran [0-9]+ tests/ || /^OK/ || /^FAILED/ { results = results file ": " $0 "\n" }
+            / \.\.\. ok$/ { passed++ }
+            / \.\.\. skipped / {
+              i = index($0, " ... skipped ")
+              head = substr($0, 1, i - 1)
+              name = (head ~ /^[A-Za-z0-9_]+ \([A-Za-z0-9_.]+\)$/) ? head : prev
+              reason = substr($0, i + 13)
+              skipped++
+              byreason[reason]++
+              list = list "  " name " -- " reason "\n"
+            }
+            / \.\.\. (ERROR|FAIL|unexpected success)$/ { failed = failed "  " $0 "\n" }
+            { prev = $0 }
+            END {
+              print "== Results =="
+              printf "%s", results
+              print "Passed: " passed + 0 "   Skipped: " skipped + 0
+              if (failed != "") { print "== Failed / errored tests =="; printf "%s", failed }
+              print "== Skipped tests grouped by reason =="
+              for (r in byreason) printf "%6d %s\n", byreason[r], r
+              print "== Every skipped test with its reason =="
+              printf "%s", list
+            }' "$RUNNER_TEMP"/*-tests.log
+
+      - name: Failure tracebacks
+        if: failure()
+        run: |
+          awk '/^=====+$/ { on = 1 } on && n++ < 4000 { print }' "$RUNNER_TEMP"/*-tests.log
+
+  gis:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [spatialite, postgis]
+    services:
+      postgres:
+        image: postgis/postgis:10-2.5
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 10
+      memcached:
+        image: memcached:1.6
+        ports:
+          - 11211:11211
+      pylibmc:
+        image: memcached:1.6
+        ports:
+          - 11212:11211
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Django 2.2 supports GEOS <= 3.7, GDAL <= 2.3, SpatiaLite 4.x and
+      # PostGIS <= 2.5 (docs/ref/contrib/gis/install/geolibs.txt); Ubuntu 18.04
+      # ships GEOS 3.6, GDAL 2.2 and SpatiaLite 4.3 with Python 3.6.
+      - name: Build GeoDjango test image (ubuntu:18.04)
+        run: |
+          mkdir -p "$RUNNER_TEMP/gisimg"
+          cp -r tests/requirements "$RUNNER_TEMP/gisimg/requirements"
+          cat > "$RUNNER_TEMP/gisimg/Dockerfile" <<'EOF'
+          FROM ubuntu:18.04
+          ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+                python3 python3-dev python3-pip python3-setuptools build-essential \
+                gdal-bin libgdal20 libgeos-c1v5 libproj12 libsqlite3-mod-spatialite \
+                libmemcached-dev zlib1g-dev libjpeg-dev gettext ca-certificates tzdata \
+              && rm -rf /var/lib/apt/lists/*
+          ARG PIP_INDEX_URL
+          COPY requirements /requirements
+          RUN python3 -m pip install --upgrade "pip<22" \
+              && python3 -m pip install -r /requirements/py3.txt -r /requirements/postgres.txt
+          # Run as a non-root user with a passwd entry (getpass/permission tests).
+          ARG TEST_UID=1001
+          RUN useradd -m -u "$TEST_UID" tester
+          EOF
+          docker build --build-arg PIP_INDEX_URL="$TIME_MACHINE_INDEX" --build-arg TEST_UID="$(id -u)" \
+            -t django-gis "$RUNNER_TEMP/gisimg"
+          docker run --rm django-gis sh -c 'gdalinfo --version; geos-config --version 2>/dev/null || dpkg -s libgeos-c1v5 | grep Version; python3 --version'
+
+      - name: Download GeoLite2 databases (GeoIP2 tests)
+        run: |
+          mkdir -p "$RUNNER_TEMP/geoip"
+          curl -fsSL -o "$RUNNER_TEMP/geoip/GeoLite2-City.mmdb" https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+          curl -fsSL -o "$RUNNER_TEMP/geoip/GeoLite2-Country.mmdb" https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb
+
+      - name: Write test settings (${{ matrix.backend }})
+        run: |
+          mkdir -p "$RUNNER_TEMP/seal"
+          if [ "${{ matrix.backend }}" = spatialite ]; then
+          cat > "$RUNNER_TEMP/seal/seal_settings.py" <<'EOF'
+          DATABASES = {
+              'default': {'ENGINE': 'django.contrib.gis.db.backends.spatialite'},
+              'other': {'ENGINE': 'django.contrib.gis.db.backends.spatialite'},
+          }
+          SECRET_KEY = 'django_tests_secret_key'
+          PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+          GEOIP_PATH = '/geoip'
+          EOF
+          else
+          cat > "$RUNNER_TEMP/seal/seal_settings.py" <<'EOF'
+          _db = {
+              'ENGINE': 'django.contrib.gis.db.backends.postgis',
+              'USER': 'postgres',
+              'PASSWORD': 'postgres',
+              'HOST': 'localhost',
+              'PORT': '5432',
+          }
+          DATABASES = {
+              'default': dict(_db, NAME='django'),
+              'other': dict(_db, NAME='django2'),
+          }
+          SECRET_KEY = 'django_tests_secret_key'
+          PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+          GEOIP_PATH = '/geoip'
+          CACHES = {
+              'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
+              'memcached': {
+                  'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+                  'LOCATION': '127.0.0.1:11211',
+              },
+              'pylibmc': {
+                  'BACKEND': 'django.core.cache.backends.memcached.PyLibMCCache',
+                  'LOCATION': '127.0.0.1:11212',
+              },
+          }
+          EOF
+          fi
+
+      # SpatiaLite leg: the GeoDjango suite (the SQLite suite runs in `test`).
+      # PostGIS leg: the full suite, which covers gis_tests plus postgres_tests.
+      - name: Run runtests.py (${{ matrix.backend }})
+        run: |
+          if [ "${{ matrix.backend }}" = spatialite ]; then
+            LABELS="${{ inputs.test-filter || 'gis_tests' }}"
+          else
+            LABELS="${{ inputs.test-filter }}"
+          fi
+          docker run --rm --network host --user "$(id -u)" \
+            -e PYTHONPATH=/src:/seal -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "$PWD:/src" -v "$RUNNER_TEMP/seal:/seal:ro" -v "$RUNNER_TEMP/geoip:/geoip:ro" \
+            -w /src/tests django-gis \
+            python3 runtests.py --settings=seal_settings -v 2 $LABELS > "$RUNNER_TEMP/gis-tests.log" 2>&1
+
+      # The -v 2 runner output (one line per test) goes to a file because the
+      # full suite exceeds the CI log budget; this prints the runner's result
+      # lines, the passed count, every failure, and every skipped test with
+      # its reason.
+      - name: Test summary
+        if: always()
+        run: |
+          awk '
+            FNR == 1 { file = FILENAME; sub(/.*\//, "", file) }
+            /^Ran [0-9]+ tests/ || /^OK/ || /^FAILED/ { results = results file ": " $0 "\n" }
+            / \.\.\. ok$/ { passed++ }
+            / \.\.\. skipped / {
+              i = index($0, " ... skipped ")
+              head = substr($0, 1, i - 1)
+              name = (head ~ /^[A-Za-z0-9_]+ \([A-Za-z0-9_.]+\)$/) ? head : prev
+              reason = substr($0, i + 13)
+              skipped++
+              byreason[reason]++
+              list = list "  " name " -- " reason "\n"
+            }
+            / \.\.\. (ERROR|FAIL|unexpected success)$/ { failed = failed "  " $0 "\n" }
+            { prev = $0 }
+            END {
+              print "== Results =="
+              printf "%s", results
+              print "Passed: " passed + 0 "   Skipped: " skipped + 0
+              if (failed != "") { print "== Failed / errored tests =="; printf "%s", failed }
+              print "== Skipped tests grouped by reason =="
+              for (r in byreason) printf "%6d %s\n", byreason[r], r
+              print "== Every skipped test with its reason =="
+              printf "%s", list
+            }' "$RUNNER_TEMP"/*-tests.log
+
+      - name: Failure tracebacks
+        if: failure()
+        run: |
+          awk '/^=====+$/ { on = 1 } on && n++ < 4000 { print }' "$RUNNER_TEMP"/*-tests.log
+
+  javascript:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: MatteoH2O1999/setup-python@v4
+        with:
+          python-version: "3.9"
+          allow-build: allow
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "13"
+
+      - name: Configure pip index (time-machine)
+        run: pip config set global.index-url "$TIME_MACHINE_INDEX"
+
+      # The runner's cached interpreters carry a setuptools too new for the
+      # time-machine virtualenv (canonicalize_version(strip_trailing_zero=...)
+      # TypeError on 3.8), so reinstall the release-era one first.
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade --force-reinstall pip setuptools wheel==0.34.2
+          python -m pip install --upgrade tox
+
+      # js_tests/tests.html loads OpenLayers 4.6.5 from cdnjs, which PhantomJS
+      # 2.1 (grunt-contrib-qunit 1.x) can no longer fetch over TLS; serve the
+      # same file locally so the gis.OLMapWidget tests can run.
+      - name: Fetch OpenLayers for the QUnit page
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ol.js" https://cdnjs.cloudflare.com/ajax/libs/ol3/4.6.5/ol.js
+          sed -i "s#https://cdnjs.cloudflare.com/ajax/libs/ol3/4.6.5/ol.js#file://$RUNNER_TEMP/ol.js#" js_tests/tests.html
+          grep -n "ol.js" js_tests/tests.html
+
+      - name: Run JavaScript tests
+        run: tox -e javascript
+
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: MatteoH2O1999/setup-python@v4
+        with:
+          python-version: "3.9"
+          allow-build: allow
+
+      - name: Configure pip index (time-machine)
+        run: pip config set global.index-url "$TIME_MACHINE_INDEX"
+
+      # setuptools 54.2.0 reproduces the released PKG-INFO (Description header,
+      # Platform: UNKNOWN, no License-File); wheel 0.34.2 is the released
+      # WHEEL Generator.
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip "setuptools==54.2.0" "wheel==0.34.2" "build<0.8"
+
+      - name: Build sdist and wheel
+        run: python -m build --no-isolation
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
