@@ -32,6 +32,8 @@ from django.utils.version import get_version
 # The maximum number of items to display in a QuerySet.__repr__
 REPR_OUTPUT_SIZE = 20
 
+PROHIBITED_FILTER_KWARGS = frozenset(['_connector', '_negated'])
+
 # Pull into this namespace for backwards compatibility.
 EmptyResultSet = sql.EmptyResultSet
 
@@ -899,6 +901,10 @@ class QuerySet:
         return self._filter_or_exclude(True, *args, **kwargs)
 
     def _filter_or_exclude(self, negate, *args, **kwargs):
+        invalid_kwargs = PROHIBITED_FILTER_KWARGS.intersection(kwargs)
+        if invalid_kwargs:
+            invalid_kwargs_str = ', '.join("'%s'" % k for k in sorted(invalid_kwargs))
+            raise TypeError('The following kwargs are invalid: %s' % invalid_kwargs_str)
         if args or kwargs:
             assert self.query.can_filter(), \
                 "Cannot filter a query once a slice has been taken."

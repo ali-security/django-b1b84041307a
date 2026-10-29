@@ -3865,6 +3865,28 @@ class TestInvalidValuesRelation(SimpleTestCase):
             Annotation.objects.filter(tag__in=[123, 'abc'])
 
 
+class TestInvalidFilterArguments(TestCase):
+    def test_filter_rejects_invalid_arguments(self):
+        school = School.objects.create()
+        msg = "The following kwargs are invalid: '_connector', '_negated'"
+        with self.assertRaisesMessage(TypeError, msg):
+            School.objects.filter(pk=school.pk, _negated=True, _connector='evil')
+
+    def test_exclude_get_complex_filter_reject_invalid_arguments(self):
+        school = School.objects.create()
+        payload = {'pk': school.pk, 'id': school.pk, '_connector': 'OR 1=1 OR'}
+        msg = "The following kwargs are invalid: '_connector'"
+        with self.assertRaisesMessage(TypeError, msg):
+            School.objects.exclude(**payload)
+        with self.assertRaisesMessage(TypeError, msg):
+            School.objects.get(**payload)
+        with self.assertRaisesMessage(TypeError, msg):
+            School.objects.complex_filter(payload)
+        msg = "The following kwargs are invalid: '_negated'"
+        with self.assertRaisesMessage(TypeError, msg):
+            School.objects.filter(pk=school.pk, _negated=True)
+
+
 class TestTicket24605(TestCase):
     def test_ticket_24605(self):
         """

@@ -103,3 +103,12 @@ class QTests(SimpleTestCase):
         q = q1 & q2
         path, args, kwargs = q.deconstruct()
         self.assertEqual(Q(*args, **kwargs), q)
+
+    def test_connector_validation(self):
+        msg = '_connector must be one of %r, %r, or None.' % (Q.AND, Q.OR)
+        with self.assertRaisesMessage(ValueError, msg):
+            Q(_connector='evil')
+        # Dictionary expansion of untrusted input can't smuggle SQL through
+        # the connector.
+        with self.assertRaisesMessage(ValueError, msg):
+            Q(**{'price': 1, 'discounted_price': 2, '_connector': 'OR 1=1 OR'})
