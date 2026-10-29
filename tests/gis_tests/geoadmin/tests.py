@@ -1,13 +1,30 @@
+import json
+import os
+import tempfile
+
+from django.contrib.auth.models import Permission, User
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.gis import admin
 from django.contrib.gis.geos import Point
-from django.test import SimpleTestCase, override_settings
+from django.core.exceptions import SuspiciousOperation
+from django.test import RequestFactory, TestCase, override_settings
 
 from .admin import UnmodifiableAdmin
 from .models import City, site
 
 
 @override_settings(ROOT_URLCONF='django.contrib.gis.tests.geoadmin.urls')
-class GeoAdminTest(SimpleTestCase):
+class GeoAdminTest(TestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user('test', password='password', is_staff=True)
+        cls.user.user_permissions.add(
+            Permission.objects.get(
+                codename='view_city',
+                content_type=ContentType.objects.get_for_model(City),
+            )
+        )
 
     def test_ensure_geographic_media(self):
         geoadmin = site._registry[City]
@@ -97,3 +114,34 @@ class GeoAdminTest(SimpleTestCase):
             "Error creating geometry from value 'INVALID()' (String input "
             "unrecognized as WKT EWKT, and HEXEWKB.)"
         )
+
+    def test_raster_lookup_not_allowed(self):
+        geoadmin = site._registry[City]
+        request = RequestFactory().get('/city/', data={'point': '/vsicurl/someurl'})
+        request.user = self.user
+        msg = "Cannot use object '/vsicurl/someurl' for a spatial lookup parameter."
+        with self.assertRaisesMessage(SuspiciousOperation, msg):
+            geoadmin.get_changelist_instance(request)
+
+    def test_raster_json_lookup_not_allowed(self):
+        """
+        A JSON raster definition in a changelist filter doesn't create a
+        raster file on disk.
+        """
+        geoadmin = site._registry[City]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            raster_path = os.path.join(tmp_dir, 'raster.tif')
+            value = json.dumps({
+                'driver': 'tif',
+                'name': raster_path,
+                'width': 1,
+                'height': 1,
+                'srid': 4326,
+                'bands': [{'data': [1]}],
+            })
+            request = RequestFactory().get('/city/', data={'point': value})
+            request.user = self.user
+            msg = 'Cannot use object {!r} for a spatial lookup parameter.'.format(json.loads(value))
+            with self.assertRaisesMessage(SuspiciousOperation, msg):
+                geoadmin.get_changelist_instance(request)
+            self.assertIs(os.path.exists(raster_path), False)

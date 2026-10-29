@@ -7,6 +7,8 @@ from django.forms import ValidationError
 from django.test import SimpleTestCase, override_settings
 from django.utils.html import escape
 
+from .data.rasters.textrasters import JSON_RASTER
+
 
 class GeometryFieldTest(SimpleTestCase):
 
@@ -66,6 +68,17 @@ class GeometryFieldTest(SimpleTestCase):
         # but rejected by `clean`
         with self.assertRaises(forms.ValidationError):
             pnt_fld.clean('LINESTRING(0 0, 1 1)')
+
+    def test_raster_types(self):
+        fld = forms.GeometryField()
+        for value in (
+            JSON_RASTER,
+            str(JSON_RASTER),
+            '/vsicurl/http://example.com/raster.tif',
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesMessage(ValidationError, 'Invalid geometry value.'):
+                    fld.clean(value)
 
     def test_to_python(self):
         """

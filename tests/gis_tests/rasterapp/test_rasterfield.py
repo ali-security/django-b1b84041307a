@@ -151,7 +151,7 @@ class RasterFieldTest(TransactionTestCase):
                     (stx_pnt, 0, 500),
                     (stx_pnt, D(km=1000)),
                     (rast, 500),
-                    (json.loads(JSON_RASTER), 500),
+                    (GDALRaster(json.loads(JSON_RASTER)), 500),
                 ]
             elif name == 'relate':
                 # Set lookup values for the relate lookup.
@@ -162,7 +162,7 @@ class RasterFieldTest(TransactionTestCase):
                     (stx_pnt, 0, 'T*T***FF*'),
                     (stx_pnt, 'T*T***FF*'),
                     (rast, 'T*T***FF*'),
-                    (json.loads(JSON_RASTER), 'T*T***FF*'),
+                    (GDALRaster(json.loads(JSON_RASTER)), 'T*T***FF*'),
                 ]
             elif name == 'isvalid':
                 # The isvalid lookup doesn't make sense for rasters.
@@ -171,13 +171,13 @@ class RasterFieldTest(TransactionTestCase):
                 # Set lookup values for all function based operators.
                 combo_values = [
                     rast, (rast, 0), (rast, 0), (stx_pnt, 0), stx_pnt,
-                    rast, json.loads(JSON_RASTER)
+                    rast, GDALRaster(json.loads(JSON_RASTER))
                 ]
             else:
                 # Override band lookup for these, as it's not supported.
                 combo_keys[2] = 'rastprojected__' + name
                 # Set lookup values for all other operators.
-                combo_values = [rast, None, rast, stx_pnt, stx_pnt, rast, json.loads(JSON_RASTER)]
+                combo_values = [rast, None, rast, stx_pnt, stx_pnt, rast, GDALRaster(json.loads(JSON_RASTER))]
 
             # Create query filter combinations.
             self.assertEqual(
@@ -216,12 +216,6 @@ class RasterFieldTest(TransactionTestCase):
 
         # Filter raster with different lookup raster formats.
         qs = RasterModel.objects.filter(rastprojected__dwithin=(rast, D(km=1)))
-        self.assertEqual(qs.count(), 1)
-
-        qs = RasterModel.objects.filter(rastprojected__dwithin=(json.loads(JSON_RASTER), D(km=1)))
-        self.assertEqual(qs.count(), 1)
-
-        qs = RasterModel.objects.filter(rastprojected__dwithin=(JSON_RASTER, D(km=1)))
         self.assertEqual(qs.count(), 1)
 
         # Filter in an unprojected coordinate system.
@@ -332,13 +326,8 @@ class RasterFieldTest(TransactionTestCase):
         self.assertEqual(qs.count(), 0)
 
     def test_lookup_value_error(self):
-        # Test with invalid dict lookup parameter
-        obj = {}
-        msg = "Couldn't create spatial object from lookup value '%s'." % obj
-        with self.assertRaisesMessage(ValueError, msg):
-            RasterModel.objects.filter(geom__intersects=obj)
         # Test with invalid string lookup parameter
-        obj = '00000'
+        obj = 'POINT()'
         msg = "Couldn't create spatial object from lookup value '%s'." % obj
         with self.assertRaisesMessage(ValueError, msg):
             RasterModel.objects.filter(geom__intersects=obj)
@@ -360,7 +349,7 @@ class RasterFieldTest(TransactionTestCase):
 
     def test_lhs_with_index_rhs_without_index(self):
         with CaptureQueriesContext(connection) as queries:
-            RasterModel.objects.filter(rast__0__contains=json.loads(JSON_RASTER)).exists()
+            RasterModel.objects.filter(rast__0__contains=GDALRaster(json.loads(JSON_RASTER))).exists()
         # It's easier to check the indexes in the generated SQL than to write
         # tests that cover all index combinations.
         self.assertRegex(queries[-1]['sql'], r'WHERE ST_Contains\([^)]*, 1, [^)]*, 1\)')
