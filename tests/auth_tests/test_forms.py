@@ -928,6 +928,27 @@ class PasswordResetFormTest(TestDataMixin, TestCase):
             r'^<html><a href="http://example.com/reset/[\w/-]+/">Link</a></html>$',
             message.get_payload(1).get_payload()
         ))
+        
+    @override_settings(EMAIL_BACKEND="mail.custombackend.FailingEmailBackend")
+    def test_save_send_email_exceptions_are_catched_and_logged(self):
+        (user, username, email) = self.create_dummy_user()
+        form = PasswordResetForm({"email": email})
+        self.assertTrue(form.is_valid())
+
+        with self.assertLogs("django.contrib.auth", level=0) as cm:
+            form.save()
+
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(len(cm.output), 1)
+        errors = cm.output[0].split("\n")
+        pk = user.pk
+        self.assertEqual(
+            errors[0],
+            "ERROR:django.contrib.auth:Failed to send password reset email to %s" % pk,
+        )
+        self.assertEqual(
+            errors[-1], "ValueError: FailingEmailBackend is doomed to fail."
+        )
 
     @override_settings(AUTH_USER_MODEL='auth_tests.CustomEmailField')
     def test_custom_email_field(self):
