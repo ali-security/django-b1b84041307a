@@ -1369,6 +1369,7 @@ class Query:
         return target_clause
 
     def add_filtered_relation(self, filtered_relation, alias):
+        self.check_alias(alias)
         filtered_relation.alias = alias
         lookups = dict(get_children_from_q(filtered_relation.condition))
         for lookup in chain((filtered_relation.relation_name,), lookups):
