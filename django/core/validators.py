@@ -102,6 +102,7 @@ class URLValidator(RegexValidator):
     message = _('Enter a valid URL.')
     schemes = ['http', 'https', 'ftp', 'ftps']
     unsafe_chars = frozenset('\t\r\n')
+    max_length = 2048
 
     def __init__(self, schemes=None, **kwargs):
         super().__init__(**kwargs)
@@ -109,7 +110,9 @@ class URLValidator(RegexValidator):
             self.schemes = schemes
 
     def __call__(self, value):
-        if isinstance(value, str) and self.unsafe_chars.intersection(value):
+        if not isinstance(value, str) or len(value) > self.max_length:
+            raise ValidationError(self.message, code=self.code)
+        if self.unsafe_chars.intersection(value):
             raise ValidationError(self.message, code=self.code)
         # Check if the scheme is valid.
         scheme = value.split('://')[0].lower()
@@ -148,7 +151,8 @@ class URLValidator(RegexValidator):
         # section 3.1. It's defined to be 255 bytes or less, but this includes
         # one byte for the length of the name and one byte for the trailing dot
         # that's used to indicate absolute names in DNS.
-        if len(urlsplit(value).netloc) > 253:
+        splitted_url = urlsplit(value)
+        if splitted_url.hostname is None or len(splitted_url.hostname) > 253:
             raise ValidationError(self.message, code=self.code)
 
 
@@ -190,7 +194,9 @@ class EmailValidator:
             self.domain_whitelist = whitelist
 
     def __call__(self, value):
-        if not value or '@' not in value:
+        # The maximum length of an email is 320 characters per RFC 3696
+        # section 3.
+        if not value or '@' not in value or len(value) > 320:
             raise ValidationError(self.message, code=self.code)
 
         user_part, domain_part = value.rsplit('@', 1)
