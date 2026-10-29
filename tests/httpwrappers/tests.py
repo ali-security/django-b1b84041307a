@@ -17,6 +17,7 @@ from django.http import (
 )
 from django.test import SimpleTestCase
 from django.utils.functional import lazystr
+from django.utils.http import MAX_URL_REDIRECT_LENGTH
 
 
 class QueryDictTests(SimpleTestCase):
@@ -445,11 +446,26 @@ class HttpResponseTests(unittest.TestCase):
         r.writelines(['foo\n', 'bar\n', 'baz\n'])
         self.assertEqual(r.content, b'foo\nbar\nbaz\n')
 
+    def test_redirect_url_max_length(self):
+        base_url = 'https://example.com/'
+        for length in (
+            MAX_URL_REDIRECT_LENGTH - 1,
+            MAX_URL_REDIRECT_LENGTH,
+        ):
+            long_url = base_url + 'x' * (length - len(base_url))
+            with self.subTest(length=length):
+                response = HttpResponseRedirect(long_url)
+                self.assertEqual(response.url, long_url)
+                response = HttpResponsePermanentRedirect(long_url)
+                self.assertEqual(response.url, long_url)
+
     def test_unsafe_redirect(self):
         bad_urls = [
             'data:text/html,<script>window.alert("xss")</script>',
             'mailto:test@example.com',
             'file:///etc/passwd',
+            'é' * (MAX_URL_REDIRECT_LENGTH + 1),
+            'https://' + 'é' * MAX_URL_REDIRECT_LENGTH,
         ]
         for url in bad_urls:
             with self.assertRaises(DisallowedRedirect):

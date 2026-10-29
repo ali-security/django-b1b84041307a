@@ -40,6 +40,7 @@ ASCTIME_DATE = re.compile(r'^\w{3} %s %s %s %s$' % (__M, __D2, __T, __Y))
 
 RFC3986_GENDELIMS = ":/?#[]@"
 RFC3986_SUBDELIMS = "!$&'()*+,;="
+MAX_URL_REDIRECT_LENGTH = 16384
 
 FIELDS_MATCH = re.compile('&')
 

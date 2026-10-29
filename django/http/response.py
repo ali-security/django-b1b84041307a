@@ -16,7 +16,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.http.cookie import SimpleCookie
 from django.utils import timezone
 from django.utils.encoding import iri_to_uri
-from django.utils.http import http_date
+from django.utils.http import MAX_URL_REDIRECT_LENGTH, http_date
 
 _charset_from_content_type_re = re.compile(r';\s*charset=(?P<charset>[^\s;]+)', re.I)
 
@@ -456,7 +456,12 @@ class HttpResponseRedirectBase(HttpResponse):
     def __init__(self, redirect_to, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self['Location'] = iri_to_uri(redirect_to)
-        parsed = urlparse(str(redirect_to))
+        redirect_to_str = str(redirect_to)
+        if len(redirect_to_str) > MAX_URL_REDIRECT_LENGTH:
+            raise DisallowedRedirect(
+                'Unsafe redirect exceeding %d characters' % MAX_URL_REDIRECT_LENGTH
+            )
+        parsed = urlparse(redirect_to_str)
         if parsed.scheme and parsed.scheme not in self.allowed_schemes:
             raise DisallowedRedirect("Unsafe redirect to URL with protocol '%s'" % parsed.scheme)
 
